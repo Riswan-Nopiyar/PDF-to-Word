@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocShift — Konverter Dokumen Pribadi</title>
+
+  <!-- Tailwind v4 CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- PDF.js for rendering & extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+  <!-- docx.js UMD build — exposes global window.docx -->
+  <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      --bg: #0e0e0e;
+      --surface: #1d1d1d;
+      --accent: #48f955;
+      --accent-dim: rgba(72,249,85,0.12);
+      --accent-glow: rgba(72,249,85,0.25);
+      --text: #e8e8e8;
+      --muted: #6b6b6b;
+      --border: #2a2a2a;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    /* Grain overlay */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.035'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    /* Accent glow orb */
+    .glow-orb {
+      position: fixed;
+      width: 500px; height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(72,249,85,0.07) 0%, transparent 70%);
+      top: -150px; right: -150px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 1.5px dashed var(--border);
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .drop-zone.active, .drop-zone:hover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    /* Accent button */
+    .btn-accent {
+      background: var(--accent);
+      color: #0e0e0e;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      transition: box-shadow 0.2s, transform 0.15s, opacity 0.2s;
+    }
+    .btn-accent:hover:not(:disabled) {
+      box-shadow: 0 0 20px var(--accent-glow);
+      transform: translateY(-1px);
+    }
+    .btn-accent:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-ghost {
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      font-weight: 600;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Page thumbnail */
+    .page-thumb {
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .page-thumb:hover { transform: scale(1.03); border-color: var(--accent); }
+    .page-thumb.selected { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+    .page-thumb .check {
+      display: none;
+      position: absolute; top: 4px; right: 4px;
+      width: 20px; height: 20px;
+      background: var(--accent);
+      border-radius: 50%;
+      align-items: center; justify-content: center;
+    }
+    .page-thumb.selected .check { display: flex; }
+
+    /* Preview canvas */
+    #previewCanvas { max-width: 100%; display: block; margin: 0 auto; }
+
+    /* Progress bar */
+    .progress-bar {
+      height: 3px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.3s ease;
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    /* Toast */
+    #toast {
+      transition: opacity 0.3s, transform 0.3s;
+    }
+    #toast.hidden { opacity: 0; transform: translateY(10px); pointer-events: none; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+    /* Mono label */
+    .mono { font-family: 'DM Mono', monospace; }
+
+    /* Tab underline */
+    .tab-btn { border-bottom: 2px solid transparent; transition: border-color 0.2s, color 0.2s; }
+    .tab-btn.active { border-color: var(--accent); color: var(--accent); }
+
+    /* Section card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    /* Pulse ring for loading */
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+      70% { box-shadow: 0 0 0 10px transparent; }
+      100% { box-shadow: 0 0 0 0 transparent; }
+    }
+    .pulsing { animation: pulse-ring 1.5s infinite; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; }
+
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .fade-in { animation: fadeIn 0.35s ease forwards; }
+
+    canvas { image-rendering: -webkit-optimize-contrast; }
+  </style>
+</head>
+<body class="relative">
+
+  <div class="glow-orb"></div>
+
+  <!-- ====== HEADER ====== -->
+  <header class="relative z-10 border-b border-[#1d1d1d] px-5 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:var(--accent)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0e0e0e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+          </svg>
+        </div>
+        <span class="text-xl font-extrabold tracking-tight" style="letter-spacing:-0.03em">DocShift</span>
+        <span class="mono text-xs px-2 py-0.5 rounded" style="background:var(--surface);color:var(--muted);border:1px solid var(--border)">v1.0</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full inline-block" style="background:var(--accent)"></span>
+        <span class="text-xs" style="color:var(--muted)">Diproses lokal · 100% privat</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ====== MAIN ====== -->
+  <main class="relative z-10 max-w-5xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Upload Zone -->
+    <div id="uploadSection">
+      <div id="dropZone" class="drop-zone rounded-2xl p-10 text-center cursor-pointer"
+        onclick="document.getElementById('fileInput').click()"
+        ondragover="handleDragOver(event)"
+        ondragleave="handleDragLeave(event)"
+        ondrop="handleDrop(event)">
+        <input type="file" id="fileInput" accept=".pdf" class="hidden" onchange="handleFile(this.files[0])" />
+        <div class="flex flex-col items-center gap-4">
+          <div class="w-16 h-16 rounded-2xl flex items-center justify-center" style="background:var(--accent-dim);border:1px solid var(--accent-glow)">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <div>
+            <p class="text-lg font-bold">Drag & drop PDF ke sini</p>
+            <p class="text-sm mt-1" style="color:var(--muted)">atau klik untuk memilih file · Maks 50MB</p>
+          </div>
+          <div class="flex gap-2 flex-wrap justify-center">
+            <span class="mono text-xs px-2 py-1 rounded" style="background:var(--surface);color:var(--muted)">.pdf → .docx</span>
+            <span class="mono text-xs px-2 py-1 rounded" style="background:var(--surface);color:var(--muted)">Preview halaman</span>
+            <span class="mono text-xs px-2 py-1 rounded" style="background:var(--surface);color:var(--muted)">Pilih halaman</span>
+            <span class="mono text-xs px-2 py-1 rounded" style="background:var(--surface);color:var(--muted)">100% lokal</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading state -->
+    <div id="loadingState" class="hidden card p-6 text-center space-y-4">
+      <div class="w-12 h-12 mx-auto rounded-full border-2 border-t-transparent spin" style="border-color:var(--accent);border-top-color:transparent"></div>
+      <p class="font-semibold" id="loadingMsg">Memuat PDF…</p>
+      <div class="progress-bar max-w-xs mx-auto">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <!-- Main workspace (hidden until file loaded) -->
+    <div id="workspace" class="hidden space-y-5 fade-in">
+
+      <!-- File info bar -->
+      <div class="card px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style="background:var(--accent-dim)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <p class="font-bold text-sm truncate" id="fileName">—</p>
+            <p class="mono text-xs" style="color:var(--muted)" id="fileInfo">—</p>
+          </div>
+        </div>
+        <button onclick="resetApp()" class="btn-ghost text-xs px-3 py-1.5 rounded-lg flex-shrink-0">
+          ✕ Ganti File
+        </button>
+      </div>
+
+      <!-- Tabs -->
+      <div class="flex gap-0 border-b" style="border-color:var(--border)">
+        <button id="tab-pages" class="tab-btn active px-4 py-2 text-sm font-semibold" onclick="switchTab('pages')">
+          📄 Pilih Halaman
+        </button>
+        <button id="tab-preview" class="tab-btn px-4 py-2 text-sm font-semibold" style="color:var(--muted)" onclick="switchTab('preview')">
+          🔍 Preview
+        </button>
+        <button id="tab-options" class="tab-btn px-4 py-2 text-sm font-semibold" style="color:var(--muted)" onclick="switchTab('options')">
+          ⚙️ Opsi
+        </button>
+      </div>
+
+      <!-- TAB: Halaman -->
+      <div id="panel-pages" class="space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p class="font-bold">Pilih halaman untuk dikonversi</p>
+            <p class="text-xs mt-0.5" style="color:var(--muted)">Klik thumbnail untuk pilih/batal pilih · <span id="selectedCount">0</span> halaman dipilih</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="selectAll()" class="btn-ghost text-xs px-3 py-1.5 rounded-lg">Pilih Semua</button>
+            <button onclick="deselectAll()" class="btn-ghost text-xs px-3 py-1.5 rounded-lg">Hapus Pilihan</button>
+          </div>
+        </div>
+
+        <!-- Thumbnails grid -->
+        <div id="thumbGrid" class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(110px, 1fr))">
+          <!-- Thumbnails injected here -->
+        </div>
+      </div>
+
+      <!-- TAB: Preview -->
+      <div id="panel-preview" class="hidden space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <p class="font-bold">Preview Halaman</p>
+          <div class="flex items-center gap-2">
+            <button onclick="prevPage()" class="btn-ghost text-xs px-3 py-1.5 rounded-lg">← Prev</button>
+            <span class="mono text-xs" style="color:var(--muted)">
+              <span id="currentPageLabel">1</span> / <span id="totalPagesLabel">?</span>
+            </span>
+            <button onclick="nextPage()" class="btn-ghost text-xs px-3 py-1.5 rounded-lg">Next →</button>
+          </div>
+        </div>
+        <div class="card p-2 overflow-auto" style="max-height:70vh">
+          <canvas id="previewCanvas"></canvas>
+        </div>
+        <p class="text-xs text-center" style="color:var(--muted)">Klik thumbnail di tab "Pilih Halaman" untuk preview halaman tertentu</p>
+      </div>
+
+      <!-- TAB: Opsi -->
+      <div id="panel-options" class="hidden space-y-5">
+        <div class="card p-5 space-y-4">
+          <p class="font-bold text-sm">Opsi Konversi</p>
+
+          <label class="flex items-start gap-3 cursor-pointer">
+            <div class="relative mt-0.5">
+              <input type="checkbox" id="opt-preserve-layout" class="sr-only peer" checked />
+              <div class="w-10 h-5 rounded-full peer-checked:bg-[#48f955] bg-[#2a2a2a] transition-colors"></div>
+              <div class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-5"></div>
+            </div>
+            <div>
+              <p class="text-sm font-semibold">Pisahkan paragraf otomatis</p>
+              <p class="text-xs mt-0.5" style="color:var(--muted)">Mencoba mendeteksi batas paragraf dari jarak antar baris</p>
+            </div>
+          </label>
+
+          <label class="flex items-start gap-3 cursor-pointer">
+            <div class="relative mt-0.5">
+              <input type="checkbox" id="opt-heading-detect" class="sr-only peer" checked />
+              <div class="w-10 h-5 rounded-full peer-checked:bg-[#48f955] bg-[#2a2a2a] transition-colors"></div>
+              <div class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-5"></div>
+            </div>
+            <div>
+              <p class="text-sm font-semibold">Deteksi heading otomatis</p>
+              <p class="text-xs mt-0.5" style="color:var(--muted)">Teks besar/bold kemungkinan dijadikan heading di Word</p>
+            </div>
+          </label>
+
+          <label class="flex items-start gap-3 cursor-pointer">
+            <div class="relative mt-0.5">
+              <input type="checkbox" id="opt-page-break" class="sr-only peer" checked />
+              <div class="w-10 h-5 rounded-full peer-checked:bg-[#48f955] bg-[#2a2a2a] transition-colors"></div>
+              <div class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-5"></div>
+            </div>
+            <div>
+              <p class="text-sm font-semibold">Sisipkan page break antar halaman</p>
+              <p class="text-xs mt-0.5" style="color:var(--muted)">Setiap halaman PDF dipisah di Word dengan page break</p>
+            </div>
+          </label>
+
+          <div>
+            <label class="text-sm font-semibold block mb-2">Ukuran font dasar (pt)</label>
+            <div class="flex items-center gap-3">
+              <input type="range" id="opt-font-size" min="8" max="16" value="11" class="flex-1 accent-[#48f955]" oninput="document.getElementById('fontSizeVal').textContent=this.value" />
+              <span class="mono text-sm w-6 text-right" id="fontSizeVal">11</span>
+            </div>
+          </div>
+
+          <div>
+            <label class="text-sm font-semibold block mb-2">Nama file output</label>
+            <input type="text" id="opt-filename" placeholder="output.docx"
+              class="w-full rounded-lg px-3 py-2 text-sm mono outline-none focus:ring-1"
+              style="background:var(--bg);border:1px solid var(--border);color:var(--text);--tw-ring-color:var(--accent)" />
+          </div>
+        </div>
+
+        <div class="card p-4 text-xs space-y-1.5" style="color:var(--muted)">
+          <p class="font-semibold" style="color:var(--text)">ℹ️ Catatan penting</p>
+          <p>• Konversi dilakukan 100% di browser Anda. File tidak dikirim ke mana pun.</p>
+          <p>• PDF berbasis teks (bukan scan) menghasilkan output terbaik.</p>
+          <p>• PDF scan / gambar: teks tidak akan terekstrak (tidak ada OCR).</p>
+          <p>• Tabel kompleks dan kolom mungkin tidak terstruktur sempurna — ini batasan ekstraksi teks PDF.</p>
+        </div>
+      </div>
+
+      <!-- Convert button -->
+      <div class="card p-5 space-y-3">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p class="font-bold">Siap Konversi</p>
+            <p class="text-xs" style="color:var(--muted)">
+              <span id="convertSummary">0 halaman dipilih</span>
+            </p>
+          </div>
+          <button id="convertBtn" onclick="startConvert()" disabled class="btn-accent px-6 py-2.5 rounded-xl text-sm">
+            🚀 Konversi ke .docx
+          </button>
+        </div>
+        <div class="progress-bar" id="convertProgress" style="display:none">
+          <div class="progress-fill" id="convertProgressFill"></div>
+        </div>
+        <p class="text-xs hidden" style="color:var(--accent)" id="convertStatus"></p>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="relative z-10 text-center py-6 border-t" style="border-color:var(--border)">
+    <p class="mono text-xs" style="color:var(--muted)">DocShift · Diproses lokal · Tidak ada upload · File sensitif aman</p>
+  </footer>
+
+  <!-- Toast -->
+  <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-xl px-5 py-3 text-sm font-semibold shadow-2xl" style="background:var(--surface);border:1px solid var(--border)">
+    <span id="toastMsg"></span>
+  </div>
+
+  <!-- ====================================================== -->
+  <!-- APP LOGIC -->
+  <!-- ====================================================== -->
+  <script>
+    // Config
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    // State
+    let pdfDoc = null;
+    let totalPages = 0;
+    let selectedPages = new Set();
+    let currentPreviewPage = 1;
+    let thumbCanvases = {};
+
+    // ---- Drag & Drop ----
+    function handleDragOver(e) {
+      e.preventDefault();
+      document.getElementById('dropZone').classList.add('active');
+    }
+    function handleDragLeave(e) {
+      document.getElementById('dropZone').classList.remove('active');
+    }
+    function handleDrop(e) {
+      e.preventDefault();
+      document.getElementById('dropZone').classList.remove('active');
+      const file = e.dataTransfer.files[0];
+      if (file && file.type === 'application/pdf') handleFile(file);
+      else toast('⚠️ Hanya file PDF yang didukung', 'warning');
+    }
+
+    // ---- Load PDF ----
+    async function handleFile(file) {
+      if (!file) return;
+      if (file.size > 52428800) { toast('⚠️ File terlalu besar (maks 50MB)'); return; }
+
+      show('loadingState');
+      hide('uploadSection');
+      setProgress(0);
+      setLoadingMsg('Membaca file…');
+
+      const arrayBuffer = await file.arrayBuffer();
+      setProgress(20);
+      setLoadingMsg('Memuat PDF…');
+
+      try {
+        pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        totalPages = pdfDoc.numPages;
+        setProgress(60);
+        setLoadingMsg(`Memuat ${totalPages} halaman…`);
+
+        // Set file info
+        document.getElementById('fileName').textContent = file.name;
+        document.getElementById('fileInfo').textContent =
+          `${totalPages} halaman · ${(file.size / 1024).toFixed(0)} KB`;
+        document.getElementById('totalPagesLabel').textContent = totalPages;
+        document.getElementById('opt-filename').placeholder =
+          file.name.replace(/\.pdf$/i, '') + '.docx';
+
+        // Select all by default
+        selectedPages = new Set(Array.from({length: totalPages}, (_, i) => i + 1));
+
+        setProgress(80);
+        setLoadingMsg('Merender thumbnail…');
+
+        await renderThumbnails();
+
+        setProgress(100);
+        hide('loadingState');
+        show('workspace');
+        updateUI();
+        // Auto preview page 1
+        renderPreview(1);
+
+      } catch (err) {
+        hide('loadingState');
+        show('uploadSection');
+        toast('❌ Gagal memuat PDF: ' + err.message);
+        console.error(err);
+      }
+    }
+
+    // ---- Thumbnails ----
+    async function renderThumbnails() {
+      const grid = document.getElementById('thumbGrid');
+      grid.innerHTML = '';
+      thumbCanvases = {};
+
+      for (let i = 1; i <= totalPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const vp = page.getViewport({ scale: 0.25 });
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width;
+        canvas.height = vp.height;
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+        thumbCanvases[i] = canvas;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'page-thumb rounded-lg overflow-hidden relative select-none ' +
+          (selectedPages.has(i) ? 'selected' : '');
+        wrap.dataset.page = i;
+        wrap.onclick = () => togglePage(i);
+
+        const img = document.createElement('img');
+        img.src = canvas.toDataURL('image/jpeg', 0.7);
+        img.className = 'w-full block';
+        img.style.background = '#fff';
+
+        const check = document.createElement('div');
+        check.className = 'check';
+        check.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0e0e0e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+        const label = document.createElement('div');
+        label.className = 'text-center py-1 mono text-xs';
+        label.style.color = 'var(--muted)';
+        label.textContent = i;
+
+        wrap.appendChild(img);
+        wrap.appendChild(check);
+        wrap.appendChild(label);
+
+        // Click for preview too
+        wrap.addEventListener('dblclick', () => { switchTab('preview'); renderPreview(i); });
+
+        grid.appendChild(wrap);
+      }
+    }
+
+    function togglePage(n) {
+      if (selectedPages.has(n)) selectedPages.delete(n);
+      else selectedPages.add(n);
+      const el = document.querySelector(`[data-page="${n}"]`);
+      if (el) el.classList.toggle('selected', selectedPages.has(n));
+      updateUI();
+    }
+
+    function selectAll() {
+      for (let i = 1; i <= totalPages; i++) selectedPages.add(i);
+      document.querySelectorAll('.page-thumb').forEach(el => el.classList.add('selected'));
+      updateUI();
+    }
+
+    function deselectAll() {
+      selectedPages.clear();
+      document.querySelectorAll('.page-thumb').forEach(el => el.classList.remove('selected'));
+      updateUI();
+    }
+
+    function updateUI() {
+      const n = selectedPages.size;
+      document.getElementById('selectedCount').textContent = n;
+      document.getElementById('convertSummary').textContent =
+        n === 0 ? 'Belum ada halaman dipilih' :
+        `${n} dari ${totalPages} halaman akan dikonversi`;
+      document.getElementById('convertBtn').disabled = n === 0;
+    }
+
+    // ---- Preview ----
+    async function renderPreview(pageNum) {
+      if (!pdfDoc) return;
+      pageNum = Math.max(1, Math.min(pageNum, totalPages));
+      currentPreviewPage = pageNum;
+      document.getElementById('currentPageLabel').textContent = pageNum;
+
+      const page = await pdfDoc.getPage(pageNum);
+      const canvas = document.getElementById('previewCanvas');
+      const container = canvas.parentElement;
+      const scale = Math.min(2, container.clientWidth / page.getViewport({scale:1}).width);
+      const vp = page.getViewport({ scale });
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    }
+
+    function prevPage() { renderPreview(currentPreviewPage - 1); }
+    function nextPage() { renderPreview(currentPreviewPage + 1); }
+
+    // ---- Tabs ----
+    function switchTab(name) {
+      ['pages','preview','options'].forEach(t => {
+        document.getElementById('panel-' + t).classList.add('hidden');
+        const btn = document.getElementById('tab-' + t);
+        btn.classList.remove('active');
+        btn.style.color = 'var(--muted)';
+      });
+      document.getElementById('panel-' + name).classList.remove('hidden');
+      const activeBtn = document.getElementById('tab-' + name);
+      activeBtn.classList.add('active');
+      activeBtn.style.color = '';
+      if (name === 'preview') renderPreview(currentPreviewPage);
+    }
+
+    // ---- Convert ----
+    async function startConvert() {
+      if (typeof docx === 'undefined') {
+        toast('❌ Library docx.js belum termuat. Cek koneksi internet lalu reload.');
+        return;
+      }
+      if (selectedPages.size === 0) { toast('Pilih minimal 1 halaman'); return; }
+
+      const btn = document.getElementById('convertBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Mengkonversi…';
+
+      const progressEl = document.getElementById('convertProgress');
+      const fillEl = document.getElementById('convertProgressFill');
+      const statusEl = document.getElementById('convertStatus');
+      progressEl.style.display = 'block';
+      statusEl.classList.remove('hidden');
+
+      const preserveLayout = document.getElementById('opt-preserve-layout').checked;
+      const detectHeading = document.getElementById('opt-heading-detect').checked;
+      const pageBreak = document.getElementById('opt-page-break').checked;
+      const baseFontSize = parseInt(document.getElementById('opt-font-size').value);
+      const outFilename = document.getElementById('opt-filename').value || 
+        document.getElementById('fileName').textContent.replace(/\.pdf$/i,'') + '.docx';
+
+      const sortedPages = Array.from(selectedPages).sort((a,b) => a-b);
+      const children = [];
+
+      try {
+        for (let idx = 0; idx < sortedPages.length; idx++) {
+          const pageNum = sortedPages[idx];
+          const pct = Math.round((idx / sortedPages.length) * 90);
+          fillEl.style.width = pct + '%';
+          statusEl.textContent = `Memproses halaman ${pageNum}…`;
+
+          const page = await pdfDoc.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const viewport = page.getViewport({ scale: 1 });
+          const pageHeight = viewport.height;
+
+          // Group items into lines by Y position
+          const lines = groupIntoLines(textContent.items, pageHeight);
+
+          // Convert lines to docx paragraphs
+          for (let li = 0; li < lines.length; li++) {
+            const line = lines[li];
+            if (!line.trim()) {
+              children.push(new docx.Paragraph({ text: '' }));
+              continue;
+            }
+
+            // Detect heading: check if items on this line are large or bold
+            const lineItems = getLitemsForLine(textContent.items, lines, li, pageHeight);
+            const isHeading = detectHeading && detectIsHeading(lineItems, baseFontSize);
+
+            if (isHeading) {
+              children.push(new docx.Paragraph({
+                text: line,
+                heading: docx.HeadingLevel.HEADING_2,
+                spacing: { before: 200, after: 100 }
+              }));
+            } else {
+              // Check if we should merge with previous or add new paragraph
+              if (preserveLayout && li > 0 && shouldMerge(lines, li)) {
+                // Append to last paragraph by creating a run
+                const last = children[children.length - 1];
+                if (last && last._data && last._data.options) {
+                  // recreate with merged text
+                  const prevText = last._data.options.children?.[0]?._data?.options?.text || last._data.options.text || '';
+                  children[children.length - 1] = new docx.Paragraph({
+                    children: [new docx.TextRun({ text: prevText + ' ' + line, size: baseFontSize * 2 })],
+                    spacing: { before: 60, after: 60 }
+                  });
+                } else {
+                  children.push(makePara(line, baseFontSize));
+                }
+              } else {
+                children.push(makePara(line, baseFontSize));
+              }
+            }
+          }
+
+          // Page break between pages
+          if (pageBreak && idx < sortedPages.length - 1) {
+            children.push(new docx.Paragraph({
+              children: [new docx.PageBreak()]
+            }));
+          }
+        }
+
+        fillEl.style.width = '95%';
+        statusEl.textContent = 'Membuat file .docx…';
+
+        const doc = new docx.Document({
+          sections: [{
+            properties: {
+              page: {
+                size: { width: 12240, height: 15840 },
+                margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+              }
+            },
+            children: children.length > 0 ? children : [new docx.Paragraph({ text: '' })]
+          }]
+        });
+
+        const buffer = await docx.Packer.toBlob(doc);
+        fillEl.style.width = '100%';
+
+        // Download
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(buffer);
+        a.download = outFilename.endsWith('.docx') ? outFilename : outFilename + '.docx';
+        a.click();
+        URL.revokeObjectURL(a.href);
+
+        statusEl.textContent = '✅ Selesai! File berhasil diunduh.';
+        toast('✅ Konversi berhasil! File diunduh.');
+
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = '❌ Error: ' + err.message;
+        toast('❌ Gagal konversi: ' + err.message);
+      }
+
+      btn.disabled = false;
+      btn.textContent = '🚀 Konversi ke .docx';
+    }
+
+    // ---- Text extraction helpers ----
+    function groupIntoLines(items, pageHeight) {
+      if (!items || items.length === 0) return [];
+
+      // Group by Y coordinate (rounded to nearest 2px)
+      const lineMap = new Map();
+      for (const item of items) {
+        if (!item.str || !item.str.trim()) continue;
+        const y = Math.round((pageHeight - item.transform[5]) / 2) * 2;
+        if (!lineMap.has(y)) lineMap.set(y, []);
+        lineMap.get(y).push(item);
+      }
+
+      // Sort by Y (top to bottom)
+      const sortedYs = Array.from(lineMap.keys()).sort((a, b) => a - b);
+      const lines = [];
+      let prevY = null;
+
+      for (const y of sortedYs) {
+        // Detect paragraph gap (large Y jump)
+        if (prevY !== null && (y - prevY) > 18) {
+          lines.push(''); // empty paragraph separator
+        }
+        const lineItems = lineMap.get(y).sort((a, b) => a.transform[4] - b.transform[4]);
+        lines.push(lineItems.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim());
+        prevY = y;
+      }
+
+      return lines;
+    }
+
+    function getLitemsForLine(items, lines, lineIdx, pageHeight) {
+      // Returns raw items for a given line index (best effort)
+      return items.filter(item => item.str && item.str.trim());
+    }
+
+    function detectIsHeading(items, baseFontSize) {
+      for (const item of items) {
+        const fs = item.transform ? Math.abs(item.transform[0]) : baseFontSize;
+        if (fs > baseFontSize * 1.3) return true;
+        if (item.fontName && /bold/i.test(item.fontName)) return true;
+      }
+      return false;
+    }
+
+    function shouldMerge(lines, idx) {
+      // Merge if current line doesn't end with sentence-ending punctuation
+      const prev = lines[idx - 1];
+      if (!prev || prev.trim() === '') return false;
+      return !(/[.!?:;]$/.test(prev.trim()));
+    }
+
+    function makePara(text, fontSize) {
+      return new docx.Paragraph({
+        children: [new docx.TextRun({ text, size: fontSize * 2, font: 'Calibri' })],
+        spacing: { before: 60, after: 60 }
+      });
+    }
+
+    // ---- Reset ----
+    function resetApp() {
+      pdfDoc = null;
+      totalPages = 0;
+      selectedPages.clear();
+      thumbCanvases = {};
+      document.getElementById('fileInput').value = '';
+      document.getElementById('thumbGrid').innerHTML = '';
+      hide('workspace');
+      show('uploadSection');
+      document.getElementById('convertProgress').style.display = 'none';
+      document.getElementById('convertStatus').classList.add('hidden');
+      document.getElementById('convertProgressFill').style.width = '0%';
+    }
+
+    // ---- Utils ----
+    function show(id) { document.getElementById(id).classList.remove('hidden'); }
+    function hide(id) { document.getElementById(id).classList.add('hidden'); }
+    function setProgress(pct) { document.getElementById('progressFill').style.width = pct + '%'; }
+    function setLoadingMsg(msg) { document.getElementById('loadingMsg').textContent = msg; }
+
+    let toastTimer;
+    function toast(msg, type) {
+      const el = document.getElementById('toast');
+      const msgEl = document.getElementById('toastMsg');
+      msgEl.textContent = msg;
+      el.classList.remove('hidden');
+      el.style.opacity = '1';
+      el.style.transform = 'translateX(-50%) translateY(0)';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(-50%) translateY(10px)';
+        setTimeout(() => el.classList.add('hidden'), 300);
+      }, 3500);
+    }
+  </script>
+</body>
+</html>
